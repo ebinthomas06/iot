@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>RobotHand — Control</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Syne:wght@400;700;800&display=swap');
+  :root {
+    --bg:#0a0a0c; --surface:#111114; --border:#1e1e24;
+    --accent:#00e5ff; --accent2:#ff3d71; --dim:#3a3a45;
+    --text:#e8e8f0; --muted:#555566; --green:#00ff9d; --orange:#ff9500;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;min-height:100vh}
+  body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,229,255,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,0.025) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+  .layout{position:relative;z-index:1;max-width:1000px;margin:0 auto;padding:24px}
+
+  header{display:flex;align-items:center;justify-content:space-between;padding-bottom:20px;border-bottom:1px solid var(--border);margin-bottom:24px}
+  .logo{font-family:'Syne',sans-serif;font-weight:800;font-size:1.4rem;letter-spacing:-.02em}
+  .logo span{color:var(--accent)}
+  .status-pill{display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;border:1px solid var(--border);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;background:var(--surface);transition:all .3s}
+  .status-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);transition:all .3s}
+  .status-pill.connected .status-dot{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .status-pill.connected{border-color:rgba(0,255,157,.3);color:var(--green)}
+  .status-pill.error .status-dot{background:var(--accent2);box-shadow:0 0 8px var(--accent2)}
+  .status-pill.error{border-color:rgba(255,61,113,.3);color:var(--accent2)}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
+  .card-title{font-family:'Syne',sans-serif;font-size:.65rem;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:16px}
+
+  /* CONNECT */
+  .connect-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .connect-row input{flex:1;min-width:130px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:7px 12px;font-family:'JetBrains Mono',monospace;font-size:.75rem;color:var(--text);outline:none;transition:border-color .2s}
+  .connect-row input:focus{border-color:var(--accent)}
+  .connect-row input::placeholder{color:var(--dim)}
+  .btn{padding:7px 18px;border-radius:7px;border:none;font-family:'JetBrains Mono',monospace;font-size:.75rem;font-weight:600;cursor:pointer;transition:all .2s;letter-spacing:.04em}
+  .btn-primary{background:var(--accent);color:#000}
+  .btn-primary:hover{background:#33eeff;box-shadow:0 0 12px rgba(0,229,255,.4)}
+  .btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+  .btn-ghost:hover{border-color:var(--muted);color:var(--text)}
+  .btn:disabled{opacity:.35;cursor:not-allowed}
+
+  /* GESTURE GRID */
+  .gesture-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+
+  .gesture-card{
+    display:flex;flex-direction:column;align-items:center;gap:10px;
+    padding:22px 12px;border-radius:12px;
+    border:1px solid var(--border);background:var(--bg);
+    cursor:pointer;transition:all .2s;
+    position:relative;overflow:hidden;
+    user-select:none;
+  }
+  .gesture-card:hover{border-color:var(--accent);background:rgba(0,229,255,.05);transform:translateY(-2px)}
+  .gesture-card:active{transform:scale(.96)}
+  .gesture-card.sending{border-color:var(--green);background:rgba(0,255,157,.07);animation:send-flash .4s ease}
+  .gesture-card.disabled-card{opacity:.35;cursor:not-allowed;pointer-events:none}
+
+  @keyframes send-flash{
+    0%  {box-shadow:0 0 0 0 rgba(0,255,157,.6)}
+    70% {box-shadow:0 0 0 10px rgba(0,255,157,0)}
+    100%{box-shadow:none}
+  }
+
+  .g-emoji{font-size:2.8rem;line-height:1;transition:transform .2s}
+  .gesture-card:hover .g-emoji{transform:scale(1.1)}
+  .g-name{font-family:'Syne',sans-serif;font-size:.8rem;font-weight:700;color:var(--text);text-align:center}
+  .g-angles{font-size:.6rem;color:var(--dim);text-align:center;letter-spacing:.04em}
+  .g-send-label{
+    position:absolute;bottom:0;left:0;right:0;
+    padding:5px;text-align:center;
+    font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;
+    background:rgba(0,229,255,.12);color:var(--accent);
+    transform:translateY(100%);transition:transform .2s;
+  }
+  .gesture-card:hover .g-send-label{transform:translateY(0)}
+
+  /* LAST SENT */
+  .last-sent{
+    display:flex;align-items:center;gap:16px;
+    padding:14px 20px;border-radius:10px;
+    background:var(--bg);border:1px solid var(--border);
+    margin-bottom:16px;
+  }
+  .last-sent-emoji{font-size:2rem}
+  .last-sent-info{flex:1}
+  .last-sent-name{font-family:'Syne',sans-serif;font-size:1rem;font-weight:700}
+  .last-sent-payload{font-size:.7rem;color:var(--accent);margin-top:3px;letter-spacing:.04em}
+  .last-sent-time{font-size:.65rem;color:var(--dim)}
+
+  /* CUSTOM SLIDERS */
+  .sliders-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:14px}
+  .slider-col{display:flex;flex-direction:column;align-items:center;gap:6px}
+  .slider-label{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .slider-val{font-size:.85rem;font-weight:600;color:var(--text);min-width:36px;text-align:center}
+  input[type=range]{
+    -webkit-appearance:none;width:100%;height:4px;
+    background:var(--border);border-radius:99px;outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+    background:var(--accent);cursor:pointer;
+    box-shadow:0 0 6px rgba(0,229,255,.5);
+  }
+
+  /* LOG */
+  .log-box{background:#0d0d10;border:1px solid var(--border);border-radius:8px;padding:12px 16px;height:130px;overflow-y:auto;font-size:.72rem;line-height:1.8;color:var(--muted);scroll-behavior:smooth}
+  .log-box::-webkit-scrollbar{width:4px}
+  .log-box::-webkit-scrollbar-thumb{background:var(--border);border-radius:99px}
+  .log-entry{display:flex;gap:12px}
+  .log-ts{color:var(--dim);flex-shrink:0}
+  .log-ok{color:var(--green)} .log-err{color:var(--accent2)} .log-info{color:var(--accent)} .log-data{color:var(--text)}
+
+  @media(max-width:600px){.gesture-grid{grid-template-columns:repeat(3,1fr)}.sliders-grid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <header>
+    <div class="logo">Robot<span>Hand</span> <span style="color:var(--muted);font-size:.8rem;font-weight:400">Control</span></div>
+    <div class="status-pill" id="statusPill"><div class="status-dot"></div><span id="statusText">DISCONNECTED</span></div>
+  </header>
+
+  <!-- CONNECT -->
+  <div class="card">
+    <div class="card-title">MQTT — Connect to Broker</div>
+    <div class="connect-row">
+      <input id="brokerInput" value="broker.hivemq.com" placeholder="broker"/>
+      <input id="portInput"   value="8884" placeholder="WSS port" style="max-width:80px"/>
+      <input id="topicInput"  value="robothand/fingers" placeholder="topic"/>
+      <button class="btn btn-primary" onclick="mqttConnect()">Connect</button>
+      <button class="btn btn-ghost"   onclick="mqttDisconnect()">Disconnect</button>
+    </div>
+  </div>
+
+  <!-- LAST SENT -->
+  <div class="last-sent" id="lastSent" style="display:none">
+    <span class="last-sent-emoji" id="lsEmoji">—</span>
+    <div class="last-sent-info">
+      <div class="last-sent-name" id="lsName">—</div>
+      <div class="last-sent-payload" id="lsPayload">—</div>
+    </div>
+    <div class="last-sent-time" id="lsTime">—</div>
+  </div>
+
+  <!-- GESTURE BUTTONS -->
+  <div class="card">
+    <div class="card-title">Tap a Gesture → Sends to Robot Hand</div>
+    <div class="gesture-grid" id="gestureGrid"></div>
+  </div>
+
+  <!-- CUSTOM CONTROL -->
+  <div class="card">
+    <div class="card-title">Custom Finger Control</div>
+    <div class="sliders-grid" id="slidersGrid"></div>
+    <button class="btn btn-primary" id="sendCustomBtn" onclick="sendCustom()" disabled>
+      Send Custom Angles
+    </button>
+  </div>
+
+  <!-- LOG -->
+  <div class="card">
+    <div class="card-title">Activity Log</div>
+    <div class="log-box" id="logBox"></div>
+  </div>
+
+</div>
+
+<script>
+// ── Gesture definitions ──────────────────────────────────────────────────────
+// angles = [Thumb, Index, Middle, Ring, Pinky]
+// NOTE: Index servo is INVERTED — 0=open, 180=closed for all fingers EXCEPT
+//       Index which is 180=open, 0=closed (physically reversed motor mount)
+//
+//  Open hand confirmed by user = 180, 0, 180, 180, 180
+//  So:  Thumb/Middle/Ring/Pinky → 0=closed, 180=open
+//       Index                   → 0=open,   180=closed  (inverted)
+
+const GESTURES = [
+  { name:"Open Hand",  emoji:"🖐️", angles:[180, 0,   180, 180, 180] },  // all open
+  { name:"Fist",       emoji:"✊",  angles:[0,   180, 0,   0,   0  ] },  // all closed
+  { name:"Victory",    emoji:"✌️", angles:[0,   0,   180, 0,   0  ] },  // index+middle open
+  { name:"Thumbs Up",  emoji:"👍",  angles:[180, 180, 0,   0,   0  ] },  // thumb open, rest closed
+  { name:"Point",      emoji:"☝️", angles:[0,   0,   0,   0,   0  ] },  // index open only
+  { name:"Pinky Up",   emoji:"🤙",  angles:[0,   180, 0,   0,   180] },  // pinky open only
+  { name:"Rock On",    emoji:"🤘",  angles:[0,   0,   0,   0,   180] },  // index+pinky open
+  { name:"Three",      emoji:"🤟",  angles:[0,   0,   180, 180, 0  ] },  // index+middle+ring open
+  { name:"OK",         emoji:"👌",  angles:[90,  90,  0,   0,   0  ] },  // thumb+index half, rest closed
+  { name:"Relax",      emoji:"🤚",  angles:[90,  90,  90,  90,  90 ] },  // all half
+];
+
+const FINGER_NAMES = ['Thumb','Index','Middle','Ring','Pinky'];
+
+let mqttClient  = null;
+let isConnected = false;
+
+// ── Build gesture grid ───────────────────────────────────────────────────────
+function buildGestureGrid() {
+  const grid = document.getElementById('gestureGrid');
+  grid.innerHTML = GESTURES.map((g, i) => `
+    <div class="gesture-card disabled-card" id="gcard-${i}" onclick="sendGesture(${i})">
+      <span class="g-emoji">${g.emoji}</span>
+      <span class="g-name">${g.name}</span>
+      <span class="g-angles">${g.angles.join(' · ')}</span>
+      <span class="g-send-label">▶ Send</span>
+    </div>
+  `).join('');
+}
+
+// ── Build sliders ────────────────────────────────────────────────────────────
+function buildSliders() {
+  const grid = document.getElementById('slidersGrid');
+  grid.innerHTML = FINGER_NAMES.map((name, i) => `
+    <div class="slider-col">
+      <span class="slider-label">${name}</span>
+      <span class="slider-val" id="sv-${i}">0°</span>
+      <input type="range" min="0" max="180" value="0" id="sl-${i}"
+             oninput="document.getElementById('sv-${i}').textContent=this.value+'°'"/>
+    </div>
+  `).join('');
+}
+
+// ── Enable / disable UI based on connection ──────────────────────────────────
+function setUIEnabled(enabled) {
+  isConnected = enabled;
+  document.querySelectorAll('.gesture-card').forEach(c => {
+    c.classList.toggle('disabled-card', !enabled);
+  });
+  document.getElementById('sendCustomBtn').disabled = !enabled;
+}
+
+// ── Send a preset gesture ────────────────────────────────────────────────────
+function sendGesture(idx) {
+  if (!isConnected) return;
+  const g       = GESTURES[idx];
+  const payload = g.angles.join(',');
+  publish(payload);
+
+  // Flash the card
+  const card = document.getElementById(`gcard-${idx}`);
+  card.classList.add('sending');
+  setTimeout(() => card.classList.remove('sending'), 500);
+
+  // Update last-sent bar
+  document.getElementById('lastSent').style.display = 'flex';
+  document.getElementById('lsEmoji').textContent    = g.emoji;
+  document.getElementById('lsName').textContent     = g.name;
+  document.getElementById('lsPayload').textContent  = payload;
+  document.getElementById('lsTime').textContent     = new Date().toTimeString().split(' ')[0];
+}
+
+// ── Send custom slider values ────────────────────────────────────────────────
+function sendCustom() {
+  if (!isConnected) return;
+  const angles  = FINGER_NAMES.map((_, i) => parseInt(document.getElementById(`sl-${i}`).value));
+  const payload = angles.join(',');
+  publish(payload);
+
+  document.getElementById('lastSent').style.display = 'flex';
+  document.getElementById('lsEmoji').textContent    = '🎛️';
+  document.getElementById('lsName').textContent     = 'Custom';
+  document.getElementById('lsPayload').textContent  = payload;
+  document.getElementById('lsTime').textContent     = new Date().toTimeString().split(' ')[0];
+}
+
+// ── Publish to MQTT ──────────────────────────────────────────────────────────
+function publish(payload) {
+  const topic = document.getElementById('topicInput').value.trim();
+  mqttClient.publish(topic, payload);
+  log(`→ [${topic}]  ${payload}`, 'data');
+}
+
+// ── Log ──────────────────────────────────────────────────────────────────────
+function log(msg, type='info') {
+  const box = document.getElementById('logBox');
+  const ts  = new Date().toTimeString().split(' ')[0];
+  const cls = {ok:'log-ok',err:'log-err',info:'log-info',data:'log-data'}[type]||'log-info';
+  const el  = document.createElement('div');
+  el.className = 'log-entry';
+  el.innerHTML = `<span class="log-ts">${ts}</span><span class="${cls}">${msg}</span>`;
+  box.appendChild(el); box.scrollTop = box.scrollHeight;
+  while (box.children.length > 80) box.removeChild(box.firstChild);
+}
+
+// ── Status pill ──────────────────────────────────────────────────────────────
+function setStatus(state, text) {
+  document.getElementById('statusPill').className = 'status-pill ' + state;
+  document.getElementById('statusText').textContent = text;
+}
+
+// ── MQTT ─────────────────────────────────────────────────────────────────────
+function mqttConnect() {
+  if (mqttClient) mqttClient.end(true);
+  const broker = document.getElementById('brokerInput').value.trim();
+  const port   = parseInt(document.getElementById('portInput').value.trim());
+  const topic  = document.getElementById('topicInput').value.trim();
+  const url    = `wss://${broker}:${port}/mqtt`;
+
+  log(`Connecting to ${url} …`, 'info');
+  setStatus('', 'CONNECTING…');
+  setUIEnabled(false);
+
+  mqttClient = mqtt.connect(url, {
+    clientId: 'rh_ctrl_' + Math.random().toString(16).slice(2,8),
+    clean: true, connectTimeout: 8000, reconnectPeriod: 3000,
+  });
+
+  mqttClient.on('connect', () => {
+    setStatus('connected', 'CONNECTED');
+    log(`Connected to ${broker} — ready to send on "${topic}"`, 'ok');
+    setUIEnabled(true);
+  });
+
+  mqttClient.on('error',     err => { log('Error: ' + err.message, 'err'); setStatus('error', 'ERROR'); setUIEnabled(false); });
+  mqttClient.on('close',     ()  => { setStatus('', 'DISCONNECTED'); log('Disconnected', 'err'); setUIEnabled(false); });
+  mqttClient.on('reconnect', ()  => { setStatus('', 'RECONNECTING…'); log('Reconnecting…', 'info'); setUIEnabled(false); });
+}
+
+function mqttDisconnect() {
+  if (mqttClient) { mqttClient.end(true); mqttClient = null; }
+  setStatus('', 'DISCONNECTED');
+  setUIEnabled(false);
+  log('Manually disconnected', 'info');
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+buildGestureGrid();
+buildSliders();
+log('RobotHand Control ready — connect to MQTT to enable gestures', 'info');
+</script>
+</body>
+</html>
